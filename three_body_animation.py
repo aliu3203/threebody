@@ -270,16 +270,29 @@ def create_animation(three_body, trail_length=100, interval=50):
                         zorder=6)
     
     # Set axis limits based on trajectory
-    all_positions = three_body.trajectory[:, [0, 2, 4, 1, 3, 5]]  # All x and y coordinates
-    x_min, x_max = all_positions[:, [0, 1, 2]].min(), all_positions[:, [0, 1, 2]].max()
-    y_min, y_max = all_positions[:, [3, 4, 5]].min(), all_positions[:, [3, 4, 5]].max()
+    # Extract all x and y coordinates from trajectory
+    all_x = np.concatenate([three_body.trajectory[:, 0], 
+                            three_body.trajectory[:, 2], 
+                            three_body.trajectory[:, 4]])
+    all_y = np.concatenate([three_body.trajectory[:, 1], 
+                            three_body.trajectory[:, 3], 
+                            three_body.trajectory[:, 5]])
     
-    # Add some padding
+    # Use percentiles to exclude extreme outliers (use 1st and 99th percentiles)
+    # This gives a tighter frame that focuses on where the masses actually are
+    x_min, x_max = np.percentile(all_x, [1, 99])
+    y_min, y_max = np.percentile(all_y, [1, 99])
+    
+    # Add small fixed padding (2% of range, or minimum fixed amount)
     x_range = x_max - x_min
     y_range = y_max - y_min
-    padding = 0.1
-    ax.set_xlim(x_min - padding * x_range, x_max + padding * x_range)
-    ax.set_ylim(y_min - padding * y_range, y_max + padding * y_range)
+    # Use smaller padding: 2% of range, but at least ensure some minimum padding
+    padding_factor = 0.02
+    x_padding = max(x_range * padding_factor, 0.01 * max(abs(x_min), abs(x_max)) if max(abs(x_min), abs(x_max)) > 0 else 0.1)
+    y_padding = max(y_range * padding_factor, 0.01 * max(abs(y_min), abs(y_max)) if max(abs(y_min), abs(y_max)) > 0 else 0.1)
+    
+    ax.set_xlim(x_min - x_padding, x_max + x_padding)
+    ax.set_ylim(y_min - y_padding, y_max + y_padding)
     
     def animate(frame):
         """Update function for animation."""
@@ -361,7 +374,7 @@ def main():
     """
     # Alternative: Simple three body system (uncomment to use)
     initial_positions = [
-        [-0.5, 0.0],   # Body 1
+        [-0.3, 0.3],   # Body 1
         [1.0, 0.7],    # Body 2
         [0.0, 1.0]     # Body 3
     ]
