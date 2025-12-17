@@ -6,12 +6,13 @@ Simulates and animates the gravitational interaction of three bodies.
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+from matplotlib.collections import LineCollection
 from scipy.integrate import solve_ivp
 
 class ThreeBodyProblem:
     """Class to simulate the three body problem."""
     
-    def __init__(self, masses, initial_positions, initial_velocities, G=1.0):
+    def __init__(self, masses, initial_positions, initial_velocities, G=1.0, softening=1e-6):
         """
         Initialize the three body problem.
         
@@ -25,10 +26,43 @@ class ThreeBodyProblem:
             Initial velocities [[vx1, vy1], [vx2, vy2], [vx3, vy3]]
         G : float
             Gravitational constant (default: 1.0)
+        softening : float
+            Softening parameter to prevent infinite forces at close encounters (default: 1e-6)
+            Should be very small to only prevent numerical overflow, not alter physics
         """
         self.masses = np.array(masses)
         self.G = G
+        self.softening = softening
         self.n_bodies = 3
+        
+        # Calculate length scale from initial positions
+        initial_pos = np.array(initial_positions)
+        # Find maximum distance between any two bodies
+        max_dist = 0.0
+        for i in range(3):
+            for j in range(i+1, 3):
+                dist = np.linalg.norm(initial_pos[i] - initial_pos[j])
+                max_dist = max(max_dist, dist)
+        
+        # Also consider typical separation (mean distance)
+        mean_dist = 0.0
+        count = 0
+        for i in range(3):
+            for j in range(i+1, 3):
+                dist = np.linalg.norm(initial_pos[i] - initial_pos[j])
+                mean_dist += dist
+                count += 1
+        mean_dist /= count if count > 0 else 1
+        
+        # Use the larger of max_dist or mean_dist as length scale
+        self.length_scale = max(max_dist, mean_dist) if max_dist > 0 else 1.0
+        
+        # Calculate maximum acceleration based on length scale
+        # Use a reasonable fraction of G*M/L^2 where M is typical mass and L is length scale
+        typical_mass = np.mean(self.masses)
+        # Maximum acceleration: cap at ~100 * typical gravitational acceleration at length scale
+        # This prevents extreme accelerations while allowing normal behavior
+        self.max_acceleration = 400.0 * self.G * typical_mass / (self.length_scale ** 2)
         
         # Flatten initial conditions for ODE solver
         # Format: [x1, y1, x2, y2, x3, y3, vx1, vy1, vx2, vy2, vx3, vy3]
@@ -68,59 +102,57 @@ class ThreeBodyProblem:
         v2 = state[8:10]
         v3 = state[10:12]
         
-        # Compute accelerations due to gravitational forces
+        # Compute accelerations due to gravitational forces with softening
+        # Softening prevents infinite forces when bodies get very close
+        # Formula: a = G * m * r / (r^2 + epsilon^2)^(3/2)
+        # Only apply softening when distance is very small to preserve physics
+        
+        def compute_acceleration(r_vec, mass_other, softening_param):
+            """Compute gravitational acceleration with adaptive softening and capping."""
+            r_sq = np.dot(r_vec, r_vec)
+            r = np.sqrt(r_sq)
+            
+            # Compute acceleration
+            if r < 1e-4:
+                # Use softening for very close encounters
+                r_soft = (r_sq + softening_param**2) ** 1.5
+                a_vec = self.G * mass_other * r_vec / r_soft
+            else:
+                # Use true inverse square law for normal distances
+                a_vec = self.G * mass_other * r_vec / (r_sq * r)
+            
+            # Cap acceleration magnitude to prevent extreme values
+            a_mag = np.linalg.norm(a_vec)
+            if a_mag > self.max_acceleration:
+                # Scale down to maximum while preserving direction
+                a_vec = a_vec * (self.max_acceleration / a_mag)
+            
+            return a_vec
+        
         # Force on body 1
         r12 = r2 - r1
         r13 = r3 - r1
-        r12_norm = np.linalg.norm(r12)
-        r13_norm = np.linalg.norm(r13)
         
-        # Avoid division by zero
-        if r12_norm < 1e-10:
-            a1_from_2 = np.zeros(2)
-        else:
-            a1_from_2 = self.G * self.masses[1] * r12 / (r12_norm ** 3)
-            
-        if r13_norm < 1e-10:
-            a1_from_3 = np.zeros(2)
-        else:
-            a1_from_3 = self.G * self.masses[2] * r13 / (r13_norm ** 3)
+        a1_from_2 = compute_acceleration(r12, self.masses[1], self.softening)
+        a1_from_3 = compute_acceleration(r13, self.masses[2], self.softening)
         
         a1 = a1_from_2 + a1_from_3
         
         # Force on body 2
         r21 = r1 - r2
         r23 = r3 - r2
-        r21_norm = np.linalg.norm(r21)
-        r23_norm = np.linalg.norm(r23)
         
-        if r21_norm < 1e-10:
-            a2_from_1 = np.zeros(2)
-        else:
-            a2_from_1 = self.G * self.masses[0] * r21 / (r21_norm ** 3)
-            
-        if r23_norm < 1e-10:
-            a2_from_3 = np.zeros(2)
-        else:
-            a2_from_3 = self.G * self.masses[2] * r23 / (r23_norm ** 3)
+        a2_from_1 = compute_acceleration(r21, self.masses[0], self.softening)
+        a2_from_3 = compute_acceleration(r23, self.masses[2], self.softening)
         
         a2 = a2_from_1 + a2_from_3
         
         # Force on body 3
         r31 = r1 - r3
         r32 = r2 - r3
-        r31_norm = np.linalg.norm(r31)
-        r32_norm = np.linalg.norm(r32)
         
-        if r31_norm < 1e-10:
-            a3_from_1 = np.zeros(2)
-        else:
-            a3_from_1 = self.G * self.masses[0] * r31 / (r31_norm ** 3)
-            
-        if r32_norm < 1e-10:
-            a3_from_2 = np.zeros(2)
-        else:
-            a3_from_2 = self.G * self.masses[1] * r32 / (r32_norm ** 3)
+        a3_from_1 = compute_acceleration(r31, self.masses[0], self.softening)
+        a3_from_2 = compute_acceleration(r32, self.masses[1], self.softening)
         
         a3 = a3_from_1 + a3_from_2
         
@@ -157,8 +189,9 @@ class ThreeBodyProblem:
             self.initial_state,
             t_eval=t_eval,
             method='RK45',
-            rtol=1e-8,
-            atol=1e-10
+            rtol=1e-10,
+            atol=1e-12,
+            dense_output=False
         )
         
         self.time_points = solution.t
@@ -207,37 +240,34 @@ def create_animation(three_body, trail_length=100, interval=50):
     if three_body.trajectory is None:
         raise ValueError("Must solve the problem first!")
     
-    fig, ax = plt.subplots(figsize=(12, 12))
+    fig, ax = plt.subplots(figsize=(12, 12), facecolor='black')
+    ax.set_facecolor('black')
     ax.set_aspect('equal')
-    ax.set_xlabel('X Position', fontsize=12)
-    ax.set_ylabel('Y Position', fontsize=12)
-    ax.set_title('Three Body Problem Animation', fontsize=16, fontweight='bold')
-    ax.grid(True, alpha=0.3)
+    ax.axis('off')  # Remove all axes and labels
     
-    # Colors for the three bodies
-    colors = ['#FF6B6B', '#4ECDC4', '#FFE66D']
-    body_names = ['Body 1', 'Body 2', 'Body 3']
+    # Black and white colors - use different shades of gray/white for bodies
+    body_colors = ['white', '0.7', '0.4']  # White, light gray, darker gray
     
     # Initialize plot elements
     bodies = []
-    trails = []
-    labels = []
+    trail_collections = []
     
     for i in range(3):
-        # Bodies (larger points)
-        body, = ax.plot([], [], 'o', color=colors[i], markersize=15, 
-                       markeredgecolor='black', markeredgewidth=1.5, 
-                       label=body_names[i], zorder=5)
+        # Bodies (white/gray points) - smaller for point mass representation
+        body, = ax.plot([], [], 'o', color=body_colors[i], markersize=6, 
+                       markeredgecolor='white', markeredgewidth=0.5, 
+                       zorder=5)
         bodies.append(body)
         
-        # Trails (lines showing path)
-        trail, = ax.plot([], [], '-', color=colors[i], alpha=0.4, linewidth=1.5, zorder=1)
-        trails.append(trail)
-        
-        # Labels
-        label = ax.text(0, 0, body_names[i], fontsize=10, color=colors[i], 
-                       fontweight='bold', ha='center', va='center', zorder=6)
-        labels.append(label)
+        # Trail collections for fading effect (initially empty)
+        trail_collection = LineCollection([], colors='white', linewidths=1.5, zorder=1)
+        ax.add_collection(trail_collection)
+        trail_collections.append(trail_collection)
+    
+    # Center of mass point (yellow) - smaller to match point masses
+    com_point, = ax.plot([], [], 'o', color='yellow', markersize=5,
+                        markeredgecolor='yellow', markeredgewidth=0.5,
+                        zorder=6)
     
     # Set axis limits based on trajectory
     all_positions = three_body.trajectory[:, [0, 2, 4, 1, 3, 5]]  # All x and y coordinates
@@ -251,44 +281,55 @@ def create_animation(three_body, trail_length=100, interval=50):
     ax.set_xlim(x_min - padding * x_range, x_max + padding * x_range)
     ax.set_ylim(y_min - padding * y_range, y_max + padding * y_range)
     
-    # Time text
-    time_text = ax.text(0.02, 0.98, '', transform=ax.transAxes, 
-                       fontsize=12, verticalalignment='top',
-                       bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-    
-    # Legend
-    ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
-    
     def animate(frame):
         """Update function for animation."""
         # Get positions at current frame
         positions = three_body.get_positions(frame)
         
+        # Calculate center of mass
+        total_mass = np.sum(three_body.masses)
+        com = np.zeros(2)
+        for i in range(3):
+            com += three_body.masses[i] * positions[i]
+        com /= total_mass
+        
+        # Update center of mass position
+        com_point.set_data([com[0]], [com[1]])
+        
         # Update body positions
         for i in range(3):
             bodies[i].set_data([positions[i, 0]], [positions[i, 1]])
             
-            # Update trails (show last trail_length positions)
+            # Update trails with fading effect
             start_idx = max(0, frame - trail_length)
             trail_positions = three_body.trajectory[start_idx:frame+1, 2*i:2*i+2]
-            if len(trail_positions) > 0:
-                trails[i].set_data(trail_positions[:, 0], trail_positions[:, 1])
             
-            # Update labels (positioned slightly offset from body)
-            offset = 0.15
-            labels[i].set_position((positions[i, 0], positions[i, 1] + offset))
+            if len(trail_positions) > 1:
+                # Create line segments for fading effect
+                segments = []
+                alphas = []
+                
+                for j in range(len(trail_positions) - 1):
+                    segment = [trail_positions[j], trail_positions[j + 1]]
+                    segments.append(segment)
+                    # Fade from 1.0 (most recent) to 0.0 (oldest)
+                    alpha = (j + 1) / len(trail_positions)
+                    alphas.append(alpha)
+                
+                # Create LineCollection with fading colors
+                colors_list = [(1.0, 1.0, 1.0, alpha) for alpha in alphas]  # White with varying alpha
+                trail_collections[i].set_segments(segments)
+                trail_collections[i].set_colors(colors_list)
+            else:
+                trail_collections[i].set_segments([])
         
-        # Update time text
-        current_time = three_body.time_points[frame]
-        time_text.set_text(f'Time: {current_time:.2f}')
-        
-        return bodies + trails + labels + [time_text]
+        return bodies + trail_collections + [com_point]
     
     # Create animation
     n_frames = len(three_body.time_points)
     anim = animation.FuncAnimation(
         fig, animate, frames=n_frames, interval=interval,
-        blit=True, repeat=True
+        blit=False, repeat=True  # blit=False because LineCollection doesn't support blitting well
     )
     
     plt.tight_layout()
@@ -302,7 +343,7 @@ def main():
     
     # Masses (equal for figure-8 solution)
     masses = [1.0, 1.0, 1.0]
-    
+    """
     # Initial positions for figure-8 solution
     # This is a periodic solution where the three bodies trace a figure-8 pattern
     initial_positions = [
@@ -317,18 +358,18 @@ def main():
         [0.466203685, 0.43236573],   # Body 2
         [-0.93240737, -0.86473146]   # Body 3
     ]
-    
+    """
     # Alternative: Simple three body system (uncomment to use)
-    # initial_positions = [
-    #     [-1.0, 0.0],   # Body 1
-    #     [1.0, 0.0],    # Body 2
-    #     [0.0, 1.5]     # Body 3
-    # ]
-    # initial_velocities = [
-    #     [0.0, -0.3],   # Body 1
-    #     [0.0, 0.3],    # Body 2
-    #     [0.0, 0.0]     # Body 3
-    # ]
+    initial_positions = [
+        [-0.5, 0.0],   # Body 1
+        [1.0, 0.7],    # Body 2
+        [0.0, 1.0]     # Body 3
+    ]
+    initial_velocities = [
+        [0.0, 0.0],   # Body 1
+        [0.0, 0.0],    # Body 2
+        [0.0, 0.0]     # Body 3
+    ]
     
     # Create and solve the problem
     three_body = ThreeBodyProblem(masses, initial_positions, initial_velocities, G=1.0)
@@ -339,7 +380,7 @@ def main():
     three_body.solve(t_span, max_step=0.02)
     
     print("Creating animation...")
-    fig, anim = create_animation(three_body, trail_length=200, interval=30)
+    fig, anim = create_animation(three_body, trail_length=50, interval=40)
     
     print("Animation ready! Close the window to exit.")
     plt.show()
