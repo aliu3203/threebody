@@ -29,6 +29,14 @@ Run the animation:
 python three_body_animation.py
 ```
 
+To run the 3D animation:
+
+```bash
+python three_body_3d_animation.py
+```
+
+If using python3, the prefix should be pip3 and python3 respectively.
+
 The script will:
 1. Set up initial conditions (default: figure-8 solution)
 2. Solve the equations of motion numerically
@@ -43,6 +51,10 @@ You can modify the initial conditions in the `main()` function:
 - **Initial Velocities**: Adjust `initial_velocities`
 - **Time Span**: Change `t_span` to simulate for longer/shorter periods
 - **Animation Speed**: Adjust `interval` parameter in `create_animation()`
+
+## Key Notes
+
+- "Collisions" with other masses are permitted. To prevent repelling phenomena, acceleration was capped relative to the length scales of the initial conditions, multiplied by a factor of 400
 
 ## Example Configurations
 
